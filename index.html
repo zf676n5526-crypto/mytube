@@ -117,6 +117,16 @@ main{padding:8px calc(var(--safeR) + 16px) calc(var(--safeB) + 40px) calc(var(--
   line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:7.5em;overflow:hidden;position:relative}
 .desc.full{max-height:none}
 .desc .tg{display:block;margin-top:6px;font-weight:700}
+.cmts{margin-top:22px}
+.cmts h4{margin:0 0 16px;font-size:16px}
+.cmt{display:flex;gap:12px;margin-bottom:18px}
+.cmt img{flex:none;width:36px;height:36px;border-radius:50%;background:var(--bg3)}
+.cmt .who{font-size:13px;font-weight:600}
+.cmt .who span{color:var(--tx2);font-weight:400;margin-left:6px}
+.cmt .tx{font-size:14px;line-height:1.6;margin-top:3px;white-space:pre-wrap;word-break:break-word}
+.cmt .lk{font-size:12px;color:var(--tx2);margin-top:5px}
+.cmt .rp{font-size:13px;font-weight:600;color:#3ea6ff;margin-top:6px}
+.cmts .more{margin:8px 0 0}
 .side h4{margin:4px 0 12px;font-size:16px}
 .mini{display:flex;gap:10px;margin-bottom:12px;text-align:left;width:100%}
 .mini .thumb{flex:none;width:168px;border-radius:8px}
@@ -328,6 +338,7 @@ async function loadChannel(c, more = false) {
       thumb: (x.snippet.thumbnails.maxres || x.snippet.thumbnails.high || x.snippet.thumbnails.medium || x.snippet.thumbnails.default).url,
       dur: parseDur(x.contentDetails.duration),
       views: x.statistics?.viewCount,
+      comments: x.statistics?.commentCount,
       live: x.snippet.liveBroadcastContent,   // none / live / upcoming
       ch: k
     }));
@@ -456,6 +467,7 @@ function openPlayer(id) {
           <div><b>${esc(c.name)}</b><div class="sub">${[fmtViews(v.views), ago(v.at)].filter(Boolean).join("・")}</div></div></div>
         ${descTxt ? `<div class="desc" id="desc">${esc(descTxt)}</div>` : ""}
       </div>
+      <section class="cmts" id="cmts"><h4>コメント${v.comments ? " " + Number(v.comments).toLocaleString() + "件" : ""}</h4><div id="cmtList"><div class="spin" style="margin:20px auto"></div></div></section>
     </div>
     <aside class="side">
       <h4>${esc(c.name)}の動画</h4>
@@ -464,9 +476,37 @@ function openPlayer(id) {
         <div><h3>${esc(x.title)}</h3><p>${[fmtViews(x.views), ago(x.at)].filter(Boolean).join("・")}</p></div></button>`).join("")}
     </aside></div>`;
   $("#sheet").classList.add("open");
+  loadComments(v.id);
   $("#pbody").scrollTop = 0;
   document.body.style.overflow = "hidden";
 }
+let cmtNext = null;
+async function loadComments(vid, more = false) {
+  const box = $("#cmtList"); if (!box) return;
+  try {
+    const j = await api("commentThreads", {
+      part: "snippet", videoId: vid, maxResults: 20, order: "relevance", textFormat: "plainText",
+      ...(more && cmtNext ? { pageToken: cmtNext } : {})
+    });
+    if (!current || current.id !== vid) return;
+    cmtNext = j.nextPageToken || null;
+    const html = (j.items || []).map(t => {
+      const c = t.snippet.topLevelComment.snippet, n = t.snippet.totalReplyCount;
+      return `<div class="cmt"><img loading="lazy" src="${esc(c.authorProfileImageUrl)}" alt="" onerror="this.style.visibility='hidden'">
+        <div><div class="who">${esc(c.authorDisplayName)}<span>${ago(c.publishedAt)}</span></div>
+        <div class="tx">${esc(c.textDisplay)}</div>
+        <div class="lk">👍 ${Number(c.likeCount || 0).toLocaleString()}</div>
+        ${n ? `<div class="rp">返信 ${n}件</div>` : ""}</div></div>`;
+    }).join("");
+    const old = $("#cmtMore"); if (old) old.remove();
+    if (more) box.insertAdjacentHTML("beforeend", html); else box.innerHTML = html || `<p class="note">まだコメントはありません</p>`;
+    if (cmtNext) box.insertAdjacentHTML("beforeend", `<button class="more" id="cmtMore" data-cv="${esc(vid)}">コメントをもっと見る</button>`);
+  } catch (e) {
+    if (!current || current.id !== vid) return;
+    box.innerHTML = `<p class="note">${/commentsDisabled/i.test(e.reason + e.message) ? "この動画はコメントがオフになっています" : "コメントを読み込めませんでした"}</p>`;
+  }
+}
+
 function closePlayer() {
   $("#sheet").classList.remove("open");
   $("#pbody").innerHTML = "";          // iframeを消して再生を止める
@@ -527,9 +567,10 @@ async function addChannel() {
 
 /* ---------- イベント ---------- */
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-tab],[data-v],[data-del],[data-up],#goSet,#btnMore,#desc");
+  const t = e.target.closest("[data-tab],[data-v],[data-cv],[data-del],[data-up],#goSet,#btnMore,#desc");
   if (!t) return;
   if (t.dataset.tab) { tab = t.dataset.tab; window.scrollTo(0, 0); render(); }
+  else if (t.dataset.cv) { t.textContent = "読み込み中…"; t.disabled = true; loadComments(t.dataset.cv, true); }
   else if (t.dataset.v) openPlayer(t.dataset.v);
   else if (t.dataset.del) {
     const i = +t.dataset.del; const c = channels[i];
