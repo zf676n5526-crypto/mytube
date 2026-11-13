@@ -102,12 +102,29 @@ main{padding:8px calc(var(--safeR) + 16px) calc(var(--safeB) + 40px) calc(var(--
 .sheet.open{display:flex;animation:up .22s ease-out}
 @keyframes up{from{transform:translateY(30px);opacity:0}}
 .sheetbar{display:flex;align-items:center;height:48px;padding:0 calc(var(--safeR) + 8px) 0 calc(var(--safeL) + 8px)}
-.pbody{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
-  padding:0 calc(var(--safeR) + 16px) calc(var(--safeB) + 30px) calc(var(--safeL) + 16px)}
-.playlayout{display:grid;grid-template-columns:1fr;gap:24px;max-width:1700px;margin:0 auto}
-@media (min-width:1000px) and (orientation:landscape){
-  .playlayout{grid-template-columns:minmax(0,1fr) 380px}
+.pbody{flex:1;min-height:0;overflow:hidden;padding:0 calc(var(--safeR) + 16px) 0 calc(var(--safeL) + 16px)}
+/* 縦向き：動画は上に固定、下だけスクロール */
+.playlayout{height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;max-width:1700px;margin:0 auto;
+  padding-bottom:calc(var(--safeB) + 30px)}
+.pstick{position:sticky;top:0;z-index:5;background:var(--bg);padding-bottom:2px}
+.side{margin-top:24px}
+/* 横向き：動画の下（概要・コメント）と右の一覧がそれぞれ別にスクロール */
+@media (min-width:900px) and (orientation:landscape){
+  .playlayout{display:flex;gap:24px;overflow:hidden;padding-bottom:0}
+  .pcol{flex:1;min-width:0;display:flex;flex-direction:column;height:100%}
+  .pstick{position:static;flex:none}
+  .pscroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(var(--safeB) + 30px)}
+  .side{flex:none;width:360px;height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:0;
+    padding-bottom:calc(var(--safeB) + 30px)}
 }
+/* ダブルタップで10秒移動 */
+.ratio .ytp, .ratio .ytp iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.tap{position:absolute;top:0;bottom:56px;width:33%;z-index:2;touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center;-webkit-user-select:none;user-select:none}
+.tap.l{left:0}.tap.r{right:0}
+.tap .fx{opacity:0;background:rgba(0,0,0,.45);color:#fff;border-radius:999px;padding:14px 18px;
+  font-size:15px;font-weight:700;transition:opacity .25s;pointer-events:none;text-align:center;line-height:1.3}
+.tap .fx.on{opacity:1}
 .vinfo h1{font-size:19px;line-height:1.4;margin:14px 0 10px}
 .vinfo .row{display:flex;align-items:center;gap:12px}
 .vinfo .row img{width:40px;height:40px;border-radius:50%}
@@ -448,6 +465,75 @@ function renderNoKey() {
 }
 
 /* ---------- プレーヤー ---------- */
+/* YouTube IFrame API（ダブルタップの早送りに使う） */
+let ytReady = null;
+function loadYT() {
+  if (ytReady) return ytReady;
+  ytReady = new Promise((res, rej) => {
+    if (window.YT && YT.Player) return res();
+    window.onYouTubeIframeAPIReady = () => res();
+    const sc = document.createElement("script");
+    sc.src = "https://www.youtube.com/iframe_api";
+    sc.onerror = () => rej();
+    document.head.appendChild(sc);
+    setTimeout(() => rej(), 6000);
+  }).catch(() => { ytReady = null; throw new Error("api"); });
+  return ytReady;
+}
+let player = null;
+function destroyPlayer() { try { player && player.destroy(); } catch {} player = null; }
+
+async function mountPlayer(vid) {
+  destroyPlayer();
+  const box = $("#ytp");
+  try {
+    await loadYT();
+    if (!current || current.id !== vid) return;
+    player = new YT.Player("ytp", {
+      host: "https://www.youtube-nocookie.com",
+      videoId: vid,
+      playerVars: { autoplay: 1, rel: 0, playsinline: 1, modestbranding: 1 }
+    });
+    setupTaps();
+  } catch {
+    // APIが使えない時は普通のプレーヤー（ダブルタップなし）
+    if (!current || current.id !== vid || !box) return;
+    box.outerHTML = `<iframe class="ytp" src="https://www.youtube-nocookie.com/embed/${esc(vid)}?autoplay=1&rel=0&playsinline=1&modestbranding=1"
+      allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+    document.querySelectorAll(".tap").forEach(t => t.remove());
+  }
+}
+
+function setupTaps() {
+  document.querySelectorAll(".tap").forEach(zone => {
+    const dir = zone.classList.contains("l") ? -1 : 1;
+    const fx = zone.querySelector(".fx");
+    let last = 0, single = null, combo = 0, hide = null;
+    zone.addEventListener("click", e => {
+      e.preventDefault();
+      const now = Date.now();
+      const p = player;
+      if (!p || !p.getCurrentTime) return;
+      if (now - last < 350) {                       // ダブルタップ（連打で20秒、30秒…）
+        clearTimeout(single); single = null;
+        combo += 10;
+        const t = Math.max(0, p.getCurrentTime() + dir * 10);
+        p.seekTo(t, true);
+        fx.innerHTML = (dir < 0 ? "◀◀<br>" : "▶▶<br>") + combo + "秒";
+        fx.classList.add("on");
+        clearTimeout(hide); hide = setTimeout(() => { fx.classList.remove("on"); combo = 0; }, 700);
+      } else {                                      // 1回だけなら再生／一時停止
+        single = setTimeout(() => {
+          single = null;
+          const st = p.getPlayerState ? p.getPlayerState() : -1;
+          if (st === 1) p.pauseVideo(); else p.playVideo();
+        }, 350);
+      }
+      last = now;
+    });
+  });
+}
+
 function openPlayer(id) {
   const all = Object.values(vids).flatMap(r => r.items);
   const v = all.find(x => x.id === id);
@@ -456,18 +542,23 @@ function openPlayer(id) {
   const c = channels.find(c => keyOf(c) === v.ch) || {};
   const list = visible((vids[v.ch]?.items) || []).filter(x => x.id !== v.id).slice(0, 30);
   const descTxt = (v.desc || "").trim();
+  destroyPlayer();
   $("#pbody").innerHTML = `<div class="playlayout">
-    <div>
-      <div class="ratio"><iframe id="frame"
-        src="https://www.youtube-nocookie.com/embed/${esc(v.id)}?autoplay=1&rel=0&playsinline=1&modestbranding=1"
-        allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>
-      <div class="vinfo">
-        <h1>${esc(v.title)}</h1>
-        <div class="row">${c.avatar ? `<img src="${esc(c.avatar)}" alt="">` : ""}
-          <div><b>${esc(c.name)}</b><div class="sub">${[fmtViews(v.views), ago(v.at)].filter(Boolean).join("・")}</div></div></div>
-        ${descTxt ? `<div class="desc" id="desc">${esc(descTxt)}</div>` : ""}
+    <div class="pcol">
+      <div class="pstick"><div class="ratio">
+        <div class="ytp" id="ytp"></div>
+        <div class="tap l"><div class="fx"></div></div>
+        <div class="tap r"><div class="fx"></div></div>
+      </div></div>
+      <div class="pscroll">
+        <div class="vinfo">
+          <h1>${esc(v.title)}</h1>
+          <div class="row">${c.avatar ? `<img src="${esc(c.avatar)}" alt="">` : ""}
+            <div><b>${esc(c.name)}</b><div class="sub">${[fmtViews(v.views), ago(v.at)].filter(Boolean).join("・")}</div></div></div>
+          ${descTxt ? `<div class="desc" id="desc">${esc(descTxt)}</div>` : ""}
+        </div>
+        <section class="cmts" id="cmts"><h4>コメント${v.comments ? " " + Number(v.comments).toLocaleString() + "件" : ""}</h4><div id="cmtList"><div class="spin" style="margin:20px auto"></div></div></section>
       </div>
-      <section class="cmts" id="cmts"><h4>コメント${v.comments ? " " + Number(v.comments).toLocaleString() + "件" : ""}</h4><div id="cmtList"><div class="spin" style="margin:20px auto"></div></div></section>
     </div>
     <aside class="side">
       <h4>${esc(c.name)}の動画</h4>
@@ -476,9 +567,9 @@ function openPlayer(id) {
         <div><h3>${esc(x.title)}</h3><p>${[fmtViews(x.views), ago(x.at)].filter(Boolean).join("・")}</p></div></button>`).join("")}
     </aside></div>`;
   $("#sheet").classList.add("open");
-  loadComments(v.id);
-  $("#pbody").scrollTop = 0;
   document.body.style.overflow = "hidden";
+  mountPlayer(v.id);
+  loadComments(v.id);
 }
 let cmtNext = null;
 async function loadComments(vid, more = false) {
@@ -509,6 +600,7 @@ async function loadComments(vid, more = false) {
 
 function closePlayer() {
   $("#sheet").classList.remove("open");
+  destroyPlayer();
   $("#pbody").innerHTML = "";          // iframeを消して再生を止める
   document.body.style.overflow = "";
   current = null;
